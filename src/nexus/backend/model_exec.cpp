@@ -114,6 +114,7 @@ bool ModelExecutor::Preprocess(std::shared_ptr<Task> task, bool force) {
 }
 
   void ModelExecutor::Enqueue(std::shared_ptr<Task> task) {
+   std::lock_guard<std::mutex> lock(task_mu_);
    processing_tasks_.emplace(task->task_id, task);
    task_queue_.push(task);
    // for (auto input : task->inputs) {
@@ -352,7 +353,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
   uint32_t batch_size = 0;
   std::unordered_map<std::string, std::vector<std::shared_ptr<Input> > > model_inputs;
   while (!task_queue_.empty()) {
-    auto task = task_queue_.top();
+    std::shared_ptr<Task> task = task_queue_.top();
     int num_inputs = 1;
     if (task->query.window_size() > 0) {
       num_inputs = task->query.window_size();
