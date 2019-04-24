@@ -336,8 +336,8 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
               task->task_id << ", waiting time " <<
               task->timer.GetLatencyMicros("begin", "exec") << " us";
       RemoveTask(task);
-      ++dequeue_cnt;
       task_queue_.pop();
+      ++dequeue_cnt;
     } else {
       finish = task->deadline();
       break;
@@ -364,6 +364,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
       batch_size -= num_inputs;
       break;
     }
+    RemoveTask(task);
     task_queue_.pop();
     ++dequeue_cnt;
     model_->Preprocess(task);
