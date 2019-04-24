@@ -366,7 +366,6 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
       batch_size -= num_inputs;
       break;
     }
-    RemoveTask(task);
     task_queue_.pop();
     ++dequeue_cnt;
     model_->Preprocess(task);
