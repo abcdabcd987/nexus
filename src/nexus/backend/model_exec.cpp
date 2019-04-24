@@ -308,6 +308,8 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     uint32_t expect_batch_size) {
   auto batch_task = std::make_shared<BatchTask>(model_->max_batch());
   batch_task->SetInputArray(input_array_);
+  
+  std::lock_guard<std::mutex> lock(task_mu_);
   if (task_queue_.empty()) {
     return {batch_task, 0};
   }
@@ -318,7 +320,6 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
   //   return {batch_task, 0};
   // }
 
-  std::lock_guard<std::mutex> lock(task_mu_);
   CHECK(profile_ != nullptr);
   int dequeue_cnt = 0;
 
