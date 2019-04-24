@@ -18,7 +18,7 @@ DEFINE_int32(backend_batch_policy, 0, "0: Sliding window; 1: Earliest first;");
 ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
                              BlockPriorityQueue<Task>& task_queue) :
     backup_(config.backup()),
-    task_queue_(task_queue),
+    global_task_queue_(task_queue),
     batch_id_(0),
     open_requests_(0),
     req_rate_(FLAGS_backend_count_interval, FLAGS_backend_avg_interval),
@@ -92,40 +92,48 @@ void ModelExecutor::UpdateBackupBackends(const ModelInstanceConfig& config) {
 }
 
 bool ModelExecutor::Preprocess(std::shared_ptr<Task> task, bool force) {
-  int cnt = 1;
-  if (task->query.window_size() > 0) {
-    cnt = task->query.window_size();
-  }
-  bool limit = !force && HasBackup();
-  if (!IncreaseOpenRequests(cnt, limit)) {
-    return false;
-  }
-  req_counter_->Increase(cnt);
-  model_->Preprocess(task);
-  if (task->result.status() != CTRL_OK) {
-    return false;
-  }
-  std::lock_guard<std::mutex> lock(task_mu_);
-  processing_tasks_.emplace(task->task_id, task);
-  for (auto input : task->inputs) {
-    input_queue_.push(input);
-  }
+  // int cnt = 1;
+  // if (task->query.window_size() > 0) {
+  //   cnt = task->query.window_size();
+  // }
+  // bool limit = !force && HasBackup();
+  // if (!IncreaseOpenRequests(cnt, limit)) {
+  //   return false;
+  // }
+  // req_counter_->Increase(cnt);
+  // model_->Preprocess(task);
+  // if (task->result.status() != CTRL_OK) {
+  //   return false;
+  // }
+  // std::lock_guard<std::mutex> lock(task_mu_);
+  // processing_tasks_.emplace(task->task_id, task);
+  // for (auto input : task->inputs) {
+  //   input_queue_.push(input);
+  // }
   return true;
 }
 
+  void ModelExecutor::Enqueue(std::shared_ptr<Task> task) {
+   processing_tasks_.emplace(task->task_id, task);
+   task_queue_.push(task);
+   // for (auto input : task->inputs) {
+   //   input_queue_.push(input);
+   // }
+  }
+
 bool ModelExecutor::AddPreprocessedTask(std::shared_ptr<Task> task,
                                         bool force) {
-  int cnt = task->inputs.size();
-  bool limit = !force && HasBackup();
-  if (!IncreaseOpenRequests(cnt, limit)) {
-    return false;
-  }
-  req_counter_->Increase(cnt);
-  std::lock_guard<std::mutex> lock(task_mu_);
-  processing_tasks_.emplace(task->task_id, task);
-  for (auto input : task->inputs) {
-    input_queue_.push(input);
-  }
+  // int cnt = task->inputs.size();
+  // bool limit = !force && HasBackup();
+  // if (!IncreaseOpenRequests(cnt, limit)) {
+  //   return false;
+  // }
+  // req_counter_->Increase(cnt);
+  // std::lock_guard<std::mutex> lock(task_mu_);
+  // processing_tasks_.emplace(task->task_id, task);
+  // for (auto input : task->inputs) {
+  //   input_queue_.push(input);
+  // }
   return true;
 }
 
@@ -223,6 +231,7 @@ void ModelExecutor::DecreaseOpenRequests(int cnt) {
   //CHECK_GE(prev, cnt) << "Negative value in open requests";
 }
 
+  /*
 std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskSlidingWindow(
     uint32_t expect_batch_size) {
   auto batch_task = std::make_shared<BatchTask>(model_->max_batch());
@@ -292,20 +301,21 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskSlidingWin
       batch_task->batch_size() << ": " << ss.str();
   return {batch_task, dequeue_cnt};
 }
+  */
 
 std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     uint32_t expect_batch_size) {
   auto batch_task = std::make_shared<BatchTask>(model_->max_batch());
   batch_task->SetInputArray(input_array_);
-  if (expect_batch_size > model_->max_batch()) {
-    expect_batch_size = model_->max_batch();
-  }
-  if (expect_batch_size > input_queue_.size()) {
-    expect_batch_size = input_queue_.size();
-  }
-  if (expect_batch_size == 0) {
+  if (task_queue_.empty()) {
     return {batch_task, 0};
   }
+  // if (expect_batch_size > input_queue_.size()) {
+  //   expect_batch_size = input_queue_.size();
+  // }
+  // if (expect_batch_size == 0) {
+  //   return {batch_task, 0};
+  // }
 
   std::lock_guard<std::mutex> lock(task_mu_);
   CHECK(profile_ != nullptr);
@@ -314,44 +324,92 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
   // find the earliest deadline
   TimePoint now = Clock::now();
   TimePoint finish = now;
+  finish += std::chrono::microseconds(static_cast<int>(profile_->GetPreprocessLatency()));
   finish += std::chrono::microseconds(static_cast<int>(profile_->GetForwardLatency(1)));
   finish += std::chrono::microseconds(static_cast<int>(profile_->GetPostprocessLatency()));
-  while (!input_queue_.empty()) {
-    auto &input = input_queue_.top();
-    auto &task = processing_tasks_.at(input->task_id);
-    if (task->result.status() != CTRL_OK || input->deadline() < finish) {
+  
+  while (!task_queue_.empty()) {
+    auto &task = task_queue_.top();
+    if (task->result.status() != CTRL_OK || task->deadline() < finish) {
       task->timer.Record("exec");
       VLOG(1) << model_->model_session_id() << " drops task " <<
-              task->task_id << "/" << input->index << ", waiting time " <<
+              task->task_id << ", waiting time " <<
               task->timer.GetLatencyMicros("begin", "exec") << " us";
-      if (task->AddVirtualOutput(input->index)) {
-        RemoveTask(task);
-      }
+      RemoveTask(task);
       ++dequeue_cnt;
-      input_queue_.pop();
+      task_queue_.pop();
     } else {
-      finish = input->deadline();
+      finish = task->deadline();
       break;
     }
   }
 
-  // calculate max batch size
+  if (task_queue_.empty()) {
+    return {batch_task, 0};
+  }
+
   int budget = std::chrono::duration_cast<std::chrono::microseconds>(finish - now).count();
+  uint32_t batch_size = 0;
+  std::unordered_map<std::string, std::vector<std::shared_ptr<Input> > > model_inputs;
+  while (!task_queue_.empty()) {
+    auto task = task_queue_.top();
+    int num_inputs = 1;
+    if (task->query.window_size() > 0) {
+      num_inputs = task->query.window_size();
+    }
+    batch_size += num_inputs;
+    double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
+      profile_->GetPostprocessLatency();
+    if (latency > budget) {
+      batch_size -= num_inputs;
+      break;
+    }
+    task_queue_.pop();
+    ++dequeue_cnt;
+    model_->Preprocess(task);
+    task->timer.Record("exec");
+    auto& model_sess_id = task->query.model_session_id();
+    if (model_inputs.find(model_sess_id) == model_inputs.end()) {
+      model_inputs.emplace(model_sess_id,
+                           std::vector<std::shared_ptr<Input> >{});
+    }
+    for (auto input : task->inputs) {
+      model_inputs.at(model_sess_id).push_back(input);
+    }
+  }
+  
+  std::stringstream ss;
+  for (auto const& iter : model_inputs) {
+    for (auto input : iter.second) {
+      auto task = processing_tasks_.at(input->task_id);
+      batch_task->AppendInput(input, task);
+      ss << task->task_id << " ";
+    }
+  }
+  VLOG(1) << model_->model_session_id() << " batch size " <<
+          batch_task->batch_size() << ": " << ss.str();
+  return {batch_task, dequeue_cnt};
+
+  /*
   budget -= static_cast<int>(profile_->GetPostprocessLatency());
-  uint32_t batch_size = 2;
+  budget -= static_cast<int>(profile_->GetPreprocessLatency());
+  uint32_t batch_size = 1;
+  while (true) {
+    if (profile_->GetForwardLatency(batch_size
+  }
   while (batch_size <= expect_batch_size && profile_->GetForwardLatency(batch_size) < budget)
     ++batch_size;
   --batch_size;
 
   // gather inputs
   uint32_t current_batch = 0;
-  std::unordered_map<std::string, std::vector<std::shared_ptr<Input> > > model_inputs;
   while (current_batch < batch_size && !input_queue_.empty()) {
     auto input = input_queue_.top();
     input_queue_.pop();
     ++dequeue_cnt;
 
     auto task = processing_tasks_.at(input->task_id);
+    model_->Proprocess(task);
     task->timer.Record("exec");
     auto& model_sess_id = task->query.model_session_id();
     if (model_inputs.find(model_sess_id) == model_inputs.end()) {
@@ -373,12 +431,13 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
   VLOG(1) << model_->model_session_id() << " batch size " <<
           batch_task->batch_size() << ": " << ss.str();
   return {batch_task, dequeue_cnt};
+  */
 }
 
 std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTask(
     uint32_t expect_batch_size) {
   switch (FLAGS_backend_batch_policy) {
-    case 0: return GetBatchTaskSlidingWindow(expect_batch_size);
+    //case 0: return GetBatchTaskSlidingWindow(expect_batch_size);
     case 1: return GetBatchTaskEarliest(expect_batch_size);
     default: LOG(FATAL) << "Unknown FLAGS_backend_batch_policy=" << FLAGS_backend_batch_policy;
   }
@@ -386,7 +445,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTask(
 
 void ModelExecutor::RemoveTask(std::shared_ptr<Task> task) {
   task->stage = kPostprocess;
-  task_queue_.push(task);
+  global_task_queue_.push(task);
   processing_tasks_.erase(task->task_id);
 }
 

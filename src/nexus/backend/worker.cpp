@@ -65,33 +65,34 @@ void Worker::Process(std::shared_ptr<Task> task) {
         break;
       }
       // Preprocess task
-      if (!task->model->Preprocess(task)) {
-        if (task->result.status() != CTRL_OK) {
-          SendReply(std::move(task));
-        } else {
-          // Relay to the request to backup servers
-          std::vector<uint32_t> backups = task->model->BackupBackends();
-          double min_util = 1.;
-          std::shared_ptr<BackupClient> best_backup = nullptr;
-          for (auto backend_id : backups) {
-            auto backup = server_->GetBackupClient(backend_id);
-            double util = backup->GetUtilization();
-            if (util < min_util) {
-              min_util = util;
-              best_backup = backup;
-            }
-          }
-          if (best_backup != nullptr) {
-            // LOG(INFO) << "Relay request " << task->query.model_session_id() <<
-            //     " to backup " << best_backup->node_id() <<
-            //     " with utilization " << min_util;
-            best_backup->Forward(std::move(task));
-          } else {
-            LOG(INFO) << "All backup servers are full";
-            task->model->Preprocess(task, true);
-          }
-        }
-      }
+      task->model->Enqueue(task);
+      // if (!task->model->Preprocess(task)) {
+      //   if (task->result.status() != CTRL_OK) {
+      //     SendReply(std::move(task));
+      //   } else {
+      //     // Relay to the request to backup servers
+      //     std::vector<uint32_t> backups = task->model->BackupBackends();
+      //     double min_util = 1.;
+      //     std::shared_ptr<BackupClient> best_backup = nullptr;
+      //     for (auto backend_id : backups) {
+      //       auto backup = server_->GetBackupClient(backend_id);
+      //       double util = backup->GetUtilization();
+      //       if (util < min_util) {
+      //         min_util = util;
+      //         best_backup = backup;
+      //       }
+      //     }
+      //     if (best_backup != nullptr) {
+      //       // LOG(INFO) << "Relay request " << task->query.model_session_id() <<
+      //       //     " to backup " << best_backup->node_id() <<
+      //       //     " with utilization " << min_util;
+      //       best_backup->Forward(std::move(task));
+      //     } else {
+      //       LOG(INFO) << "All backup servers are full";
+      //       task->model->Preprocess(task, true);
+      //     }
+      //   }
+      // }
       break;
     }
     case kPostprocess: {

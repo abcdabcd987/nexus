@@ -43,6 +43,8 @@ class ModelExecutor {
 
   void UpdateBackupBackends(const ModelInstanceConfig& config);
 
+  void Enqueue(std::shared_ptr<Task> task);
+
   bool Preprocess(std::shared_ptr<Task> task, bool force=false);
 
   bool AddPreprocessedTask(std::shared_ptr<Task> task, bool force=false);
@@ -74,16 +76,16 @@ class ModelExecutor {
   std::unique_ptr<ModelInstance> model_;
   bool backup_;
   const ModelProfile* profile_;
-  BlockPriorityQueue<Task>& task_queue_;
+  BlockPriorityQueue<Task>& global_task_queue_;
   /*!
    * \brief Map from task id to current processing tasks.
    * Guarded by task_mu_.
    */
   std::unordered_map<uint64_t, std::shared_ptr<Task> > processing_tasks_;
   /*! \brief Priority queue of inputs based on deadline. Guarded by task_mu_. */
-  std::priority_queue<std::shared_ptr<Input>,
-                      std::vector<std::shared_ptr<Input> >,
-                      CompareDeadlineItem> input_queue_;
+  std::priority_queue<std::shared_ptr<Task>,
+                      std::vector<std::shared_ptr<Task> >,
+                      CompareDeadlineItem> task_queue_;
   /*! \brief Input array allocated in GPU memory to hold batch inputs. */
   std::shared_ptr<Array> input_array_;
   /*! \brief Batch index. */
