@@ -359,6 +359,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     if (task->query.window_size() > 0) {
       num_inputs = task->query.window_size();
     }
+    if (batch_size + num_inputs > model_->max_batch()) break;
     batch_size += num_inputs;
     double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
       profile_->GetPostprocessLatency();
