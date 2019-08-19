@@ -41,8 +41,10 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
   }
 
   for (int i = 0; i < num_workers_; ++i) {
-    workers_.push_back(std::make_shared<ModelWorker>(
-        model_.get(), worker_in_queue_, worker_out_queue_));
+    auto worker = std::make_shared<ModelWorker>(
+        model_.get(), worker_in_queue_, worker_out_queue_);
+    worker->Start();
+    workers_.push_back(worker);
   }
 }
 
