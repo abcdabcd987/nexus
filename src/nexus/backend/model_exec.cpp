@@ -357,7 +357,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
   int budget = std::chrono::duration_cast<std::chrono::microseconds>(finish - now).count();
   uint32_t batch_size = 0;
   std::unordered_map<std::string, std::vector<std::shared_ptr<Input> > > model_inputs;
-  std::vector<std::thread> threads;
+  std::vector<std::pair<std::thread, std::shared_ptr<Task>>> workers;
   while (!task_queue_.empty()) {
     std::shared_ptr<Task> task = task_queue_.top();
     int num_inputs = 1;
@@ -368,7 +368,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     batch_size += num_inputs;
     // double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
     //   profile_->GetPostprocessLatency();
-    double latency = profile_->GetPreprocessLatency() +
+    double latency = profile_->GetPreprocessLatency() * 2 +
                      profile_->GetForwardLatency(batch_size) +
                      profile_->GetPostprocessLatency();
     if (latency > budget) {
@@ -377,8 +377,10 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     }
     task_queue_.pop();
     ++dequeue_cnt;
-    threads.push_back(std::thread(preprocess, model_.get(), task));
-    //model_->Preprocess(task);
+    workers.push_back(std::make_pair(
+        std::thread(preprocess, model_.get(), task), task));
+    /*
+    model_->Preprocess(task);
     task->timer.Record("exec");
     auto& model_sess_id = task->query.model_session_id();
     if (model_inputs.find(model_sess_id) == model_inputs.end()) {
@@ -388,10 +390,21 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     for (auto input : task->inputs) {
       model_inputs.at(model_sess_id).push_back(input);
     }
+    */
   }
 
-  for (auto& t: threads) {
-    t.join();
+  for (auto& it : workers) {
+    it.first.join();
+    auto task = it.second;
+    task->timer.Record("exec");
+    auto& model_sess_id = task->query.model_session_id();
+    if (model_inputs.find(model_sess_id) == model_inputs.end()) {
+      model_inputs.emplace(model_sess_id,
+                           std::vector<std::shared_ptr<Input>>{});
+    }
+    for (auto input : task->inputs) {
+      model_inputs.at(model_sess_id).push_back(input);
+    }
   }
   
   std::stringstream ss;
