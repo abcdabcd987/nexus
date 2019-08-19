@@ -304,6 +304,10 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskSlidingWin
 }
   */
 
+void preprocess(ModelInstance* model, std::shared_ptr<Task> task) {
+  model->Preprocess(task);
+}
+
 std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     uint32_t expect_batch_size) {
   auto batch_task = std::make_shared<BatchTask>(model_->max_batch());
@@ -353,6 +357,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
   int budget = std::chrono::duration_cast<std::chrono::microseconds>(finish - now).count();
   uint32_t batch_size = 0;
   std::unordered_map<std::string, std::vector<std::shared_ptr<Input> > > model_inputs;
+  std::vector<std::thread> threads;
   while (!task_queue_.empty()) {
     std::shared_ptr<Task> task = task_queue_.top();
     int num_inputs = 1;
@@ -361,15 +366,19 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     }
     if (batch_size + num_inputs > model_->max_batch()) break;
     batch_size += num_inputs;
-    double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
-      profile_->GetPostprocessLatency();
+    // double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
+    //   profile_->GetPostprocessLatency();
+    double latency = profile_->GetPreprocessLatency() +
+                     profile_->GetForwardLatency(batch_size) +
+                     profile_->GetPostprocessLatency();
     if (latency > budget) {
       batch_size -= num_inputs;
       break;
     }
     task_queue_.pop();
     ++dequeue_cnt;
-    model_->Preprocess(task);
+    threads.push_back(std::thread(preprocess, model_.get(), task));
+    //model_->Preprocess(task);
     task->timer.Record("exec");
     auto& model_sess_id = task->query.model_session_id();
     if (model_inputs.find(model_sess_id) == model_inputs.end()) {
@@ -379,6 +388,10 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     for (auto input : task->inputs) {
       model_inputs.at(model_sess_id).push_back(input);
     }
+  }
+
+  for (auto& t: threads) {
+    t.join();
   }
   
   std::stringstream ss;
