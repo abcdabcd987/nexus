@@ -352,6 +352,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
       VLOG(1) << model_->model_session_id() << " drops task " <<
               task->task_id << ", waiting time " <<
               task->timer.GetLatencyMicros("begin", "exec") << " us";
+      task->result.set_status(TIMEOUT);
       RemoveTask(task);
       task_queue_.pop();
       ++dequeue_cnt;
@@ -375,7 +376,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     if (task->query.window_size() > 0) {
       num_inputs = task->query.window_size();
     }
-    if (batch_size + num_inputs > model_->max_batch()) break;
+    if (batch_size + num_inputs > model_->batch()) break;
     batch_size += num_inputs;
     // double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
     //   profile_->GetPostprocessLatency();
