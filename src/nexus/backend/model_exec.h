@@ -13,6 +13,45 @@
 namespace nexus {
 namespace backend {
 
+class ModelWorker {
+ public:
+  ModelWorker(ModelInstance* model, BlockQueue<Task>& in_queue, BlockQueue<Task>& out_queue) :
+      model_(model), input_queue_(in_queue), output_queue_(out_queue),
+      running_(false) {}
+
+  void Start() {
+    running_ = true;
+    thread_ = std::thread(&ModelWorker::Run, this);
+  }
+
+  void Stop() {
+    running_ = false;
+    if (thread_.joinable()) {
+      thread_.join();
+    }
+  }
+
+  void Run() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    auto timeout = std::chrono::milliseconds(50);
+    while (running_) {
+      std::shared_ptr<Task> task = input_queue_.pop(timeout);
+      if (task == nullptr) {
+        continue;
+      }
+      model_->Preprocess(task);
+      output_queue_.push(task);
+    }
+  }
+
+ private:
+  ModelInstance* model_;
+  BlockQueue<Task>& input_queue_;
+  BlockQueue<Task>& output_queue_;
+  std::thread thread_;
+  std::atomic<bool> running_;
+};
+
 class ModelExecutor {
  public:
   ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
@@ -112,6 +151,11 @@ class ModelExecutor {
   std::mutex time_mu_;
 
   std::mutex backup_mu_;
+
+  int num_workers_;
+  BlockQueue<Task> worker_in_queue_;
+  BlockQueue<Task> worker_out_queue_;
+  std::vector<std::shared_ptr<ModelWorker>> workers_;
 };
 
 using ModelExecutorPtr = std::shared_ptr<ModelExecutor>;

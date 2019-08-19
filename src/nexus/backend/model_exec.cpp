@@ -22,7 +22,8 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
     batch_id_(0),
     open_requests_(0),
     req_rate_(FLAGS_backend_count_interval, FLAGS_backend_avg_interval),
-    drop_rate_(FLAGS_backend_count_interval, FLAGS_backend_avg_interval) {
+    drop_rate_(FLAGS_backend_count_interval, FLAGS_backend_avg_interval),
+    num_workers_(5) {
   // Create ModelInstance
   CreateModelInstance(gpu_id, config, &model_);
 #ifdef USE_GPU
@@ -38,9 +39,17 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
   for (auto const& info : config.backup_backend()) {
     backup_backends_.push_back(info.node_id());
   }
+
+  for (int i = 0; i < num_workers_; ++i) {
+    workers_.push_back(std::make_shared<ModelWorker>(
+        model_.get(), worker_in_queue_, worker_out_queue_));
+  }
 }
 
 ModelExecutor::~ModelExecutor() {
+  for (auto worker : workers_) {
+    worker->Stop();
+  }
   MetricRegistry::Singleton().RemoveMetric(req_counter_);
   MetricRegistry::Singleton().RemoveMetric(drop_counter_);
 }
@@ -357,7 +366,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
   int budget = std::chrono::duration_cast<std::chrono::microseconds>(finish - now).count();
   uint32_t batch_size = 0;
   std::unordered_map<std::string, std::vector<std::shared_ptr<Input> > > model_inputs;
-  std::vector<std::pair<std::thread, std::shared_ptr<Task>>> workers;
+  int num_tasks = 0;
   while (!task_queue_.empty()) {
     std::shared_ptr<Task> task = task_queue_.top();
     int num_inputs = 1;
@@ -368,7 +377,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     batch_size += num_inputs;
     // double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
     //   profile_->GetPostprocessLatency();
-    double latency = profile_->GetPreprocessLatency() * 2 +
+    double latency = profile_->GetPreprocessLatency() * model_->batch() / num_workers_ +
                      profile_->GetForwardLatency(batch_size) +
                      profile_->GetPostprocessLatency();
     if (latency > budget) {
@@ -377,8 +386,12 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     }
     task_queue_.pop();
     ++dequeue_cnt;
-    workers.push_back(std::make_pair(
-        std::thread(preprocess, model_.get(), task), task));
+    worker_in_queue_.push(task);
+    ++num_tasks;
+    
+    // workers.push_back(std::make_pair(
+    //     std::thread(preprocess, model_.get(), task), task));
+    
     /*
     model_->Preprocess(task);
     task->timer.Record("exec");
@@ -393,9 +406,9 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     */
   }
 
-  for (auto& it : workers) {
-    it.first.join();
-    auto task = it.second;
+  int finished = 0;
+  while (finished < num_tasks) {
+    auto task = worker_out_queue_.pop();
     task->timer.Record("exec");
     auto& model_sess_id = task->query.model_session_id();
     if (model_inputs.find(model_sess_id) == model_inputs.end()) {
@@ -405,7 +418,22 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     for (auto input : task->inputs) {
       model_inputs.at(model_sess_id).push_back(input);
     }
+    ++finished;
   }
+
+  // for (auto& it : workers) {
+  //   it.first.join();
+  //   auto task = it.second;
+  //   task->timer.Record("exec");
+  //   auto& model_sess_id = task->query.model_session_id();
+  //   if (model_inputs.find(model_sess_id) == model_inputs.end()) {
+  //     model_inputs.emplace(model_sess_id,
+  //                          std::vector<std::shared_ptr<Input>>{});
+  //   }
+  //   for (auto input : task->inputs) {
+  //     model_inputs.at(model_sess_id).push_back(input);
+  //   }
+  // }
   
   std::stringstream ss;
   for (auto const& iter : model_inputs) {
