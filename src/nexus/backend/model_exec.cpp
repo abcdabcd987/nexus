@@ -363,7 +363,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
   }
 
   if (task_queue_.empty()) {
-    return {batch_task, 0};
+    return {batch_task, dequeue_cnt};
   }
 
   int budget = std::chrono::duration_cast<std::chrono::microseconds>(finish - now).count();
@@ -380,7 +380,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     batch_size += num_inputs;
     // double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
     //   profile_->GetPostprocessLatency();
-    double latency = profile_->GetPreprocessLatency() * model_->batch() / num_workers_ +
+    double latency = profile_->GetPreprocessLatency() * batch_size / num_workers_ +
                      profile_->GetForwardLatency(batch_size) +
                      profile_->GetPostprocessLatency();
     if (latency > budget) {
