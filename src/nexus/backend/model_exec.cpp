@@ -409,9 +409,13 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     */
   }
 
+  auto timeout = std::chrono::milliseconds(100);
   int finished = 0;
   while (finished < num_tasks) {
-    auto task = worker_out_queue_.pop();
+    auto task = worker_out_queue_.pop(timeout);
+    if (task == nullptr) {
+      LOG(FATAL) << "Some preprocess task hasn't finished";
+    }
     task->timer.Record("exec");
     auto& model_sess_id = task->query.model_session_id();
     if (model_inputs.find(model_sess_id) == model_inputs.end()) {
