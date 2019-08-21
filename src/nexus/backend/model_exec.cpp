@@ -23,7 +23,7 @@ ModelExecutor::ModelExecutor(int gpu_id, const ModelInstanceConfig& config,
     open_requests_(0),
     req_rate_(FLAGS_backend_count_interval, FLAGS_backend_avg_interval),
     drop_rate_(FLAGS_backend_count_interval, FLAGS_backend_avg_interval),
-    num_workers_(5) {
+    num_workers_(36) {
   // Create ModelInstance
   CreateModelInstance(gpu_id, config, &model_);
 #ifdef USE_GPU
