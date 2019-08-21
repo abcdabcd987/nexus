@@ -243,16 +243,12 @@ void ModelExecutor::DecreaseOpenRequests(int cnt) {
   //CHECK_GE(prev, cnt) << "Negative value in open requests";
 }
 
-  /*
 std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskSlidingWindow(
     uint32_t expect_batch_size) {
   auto batch_task = std::make_shared<BatchTask>(model_->max_batch());
   batch_task->SetInputArray(input_array_);
   if (expect_batch_size > model_->max_batch()) {
     expect_batch_size = model_->max_batch();
-  }
-  if (expect_batch_size > input_queue_.size()) {
-    expect_batch_size = input_queue_.size();
   }
   if (expect_batch_size == 0) {
     return {batch_task, 0};
@@ -261,59 +257,60 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskSlidingWin
   std::lock_guard<std::mutex> lock(task_mu_);
   TimePoint now = Clock::now();
   TimePoint finish;
-  if (profile_ != nullptr) {
-    float latency = profile_->GetForwardLatency(expect_batch_size);
-    finish = now + std::chrono::microseconds(int(latency));
-  }
+  CHECK(profile_ != nullptr);
+  float latency = profile_->GetPreprocessLatency() * expect_batch_size / num_workers_ +
+                  profile_->GetForwardLatency(expect_batch_size) +
+                  profile_->GetPostprocessLatency();
+  finish = now + std::chrono::microseconds(int(latency));
+
   int dequeue_cnt = 0;
   int current_batch = 0;
-  std::unordered_map<std::string, std::vector<std::shared_ptr<Input> > > model_inputs;
-  while (current_batch < expect_batch_size && !input_queue_.empty()) {
-    auto input = std::move(input_queue_.top());
-    input_queue_.pop();
+  int num_tasks = 0;
+  while (!task_queue_.empty()) {
+    std::shared_ptr<Task> task = task_queue_.top();
+    int num_inputs = 1;
+    if (task->query.window_size() > 0) {
+      num_inputs = task->query.window_size();
+    }
+    if (current_batch + num_inputs > expect_batch_size) break;
+    task_queue_.pop();
     ++dequeue_cnt;
-    auto task = processing_tasks_.at(input->task_id);
-    task->timer.Record("exec");
-    if (task->result.status() != CTRL_OK ||
-        (profile_ != nullptr && input->deadline() < finish)) {
-      VLOG(1) << model_->model_session_id() << " drops task " <<
-          task->task_id << "/" << input->index << ", waiting time " <<
-          task->timer.GetLatencyMicros("begin", "exec") << " us";
-      if (task->AddVirtualOutput(input->index)) {
-        RemoveTask(task);
-      }
+    if (task->result.status() != CTRL_OK) {
+      task->timer.Record("exec");
+      RemoveTask(task);
+    } else if (task->deadline() < finish) {
+      task->result.set_status(TIMEOUT);
+      task->timer.Record("exec");
+      RemoveTask(task);
     } else {
-      auto& model_sess_id = task->query.model_session_id();
-      if (model_inputs.find(model_sess_id) == model_inputs.end()) {
-        model_inputs.emplace(model_sess_id,
-                             std::vector<std::shared_ptr<Input> >{});
-      }
+      current_batch += num_inputs;
+      worker_in_queue_.push(task);
+      ++num_tasks;
+    }
+  }
+
+  if (num_tasks == 0) {
+    return {batch_task, dequeue_cnt};
+  }
+
+  // wait preprocessing finishes
+  std::unordered_map<std::string, std::vector<std::shared_ptr<Input>>> model_inputs;
+  int finished = 0;
+  while (finished < num_tasks) {
+    auto task = worker_out_queue_.pop();
+    task->timer.Record("exec");
+    auto& model_sess_id = task->query.model_session_id();
+    if (model_inputs.find(model_sess_id) == model_inputs.end()) {
+      model_inputs.emplace(model_sess_id,
+                           std::vector<std::shared_ptr<Input>>{});
+    }
+    for (auto input : task->inputs) {
       model_inputs.at(model_sess_id).push_back(input);
-      ++current_batch;
     }
-    // Check whether there is enough requests left to fill the batch size
-    int est_max_batch = current_batch + input_queue_.size();
-    if (profile_ != nullptr && expect_batch_size > est_max_batch) {
-      expect_batch_size = est_max_batch;
-      if (expect_batch_size > 0) {
-        float latency = profile_->GetForwardLatency(expect_batch_size);
-        finish = now + std::chrono::microseconds(int(latency));
-      }
-    }
+    ++finished;
   }
-  std::stringstream ss;
-  for (auto const& iter : model_inputs) {
-    for (auto input : iter.second) {
-      auto task = processing_tasks_.at(input->task_id);
-      batch_task->AppendInput(input, task);
-      ss << task->task_id << " ";
-    }
-  }
-  VLOG(1) << model_->model_session_id() << " batch size " <<
-      batch_task->batch_size() << ": " << ss.str();
   return {batch_task, dequeue_cnt};
 }
-  */
 
 void preprocess(ModelInstance* model, std::shared_ptr<Task> task) {
   model->Preprocess(task);
@@ -353,8 +350,8 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
               task->task_id << ", waiting time " <<
               task->timer.GetLatencyMicros("begin", "exec") << " us";
       task->result.set_status(TIMEOUT);
-      RemoveTask(task);
       task_queue_.pop();
+      RemoveTask(task);
       ++dequeue_cnt;
     } else {
       finish = task->deadline();
@@ -409,13 +406,9 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     */
   }
 
-  auto timeout = std::chrono::milliseconds(100);
   int finished = 0;
   while (finished < num_tasks) {
-    auto task = worker_out_queue_.pop(timeout);
-    if (task == nullptr) {
-      LOG(FATAL) << "Some preprocess task hasn't finished";
-    }
+    auto task = worker_out_queue_.pop();
     task->timer.Record("exec");
     auto& model_sess_id = task->query.model_session_id();
     if (model_inputs.find(model_sess_id) == model_inputs.end()) {
@@ -501,7 +494,7 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
 std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTask(
     uint32_t expect_batch_size) {
   switch (FLAGS_backend_batch_policy) {
-    //case 0: return GetBatchTaskSlidingWindow(expect_batch_size);
+    case 0: return GetBatchTaskSlidingWindow(expect_batch_size);
     case 1: return GetBatchTaskEarliest(expect_batch_size);
     default: LOG(FATAL) << "Unknown FLAGS_backend_batch_policy=" << FLAGS_backend_batch_policy;
   }
