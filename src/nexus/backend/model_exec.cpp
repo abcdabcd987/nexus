@@ -247,8 +247,8 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskSlidingWin
     uint32_t expect_batch_size) {
   auto batch_task = std::make_shared<BatchTask>(model_->max_batch());
   batch_task->SetInputArray(input_array_);
-  if (expect_batch_size > model_->max_batch()) {
-    expect_batch_size = model_->max_batch();
+  if (expect_batch_size > model_->batch()) {
+    expect_batch_size = model_->batch();
   }
   if (expect_batch_size == 0) {
     return {batch_task, 0};
@@ -308,6 +308,13 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskSlidingWin
       model_inputs.at(model_sess_id).push_back(input);
     }
     ++finished;
+  }
+
+  for (auto const& iter : model_inputs) {
+    for (auto input : iter.second) {
+      auto task = processing_tasks_.at(input->task_id);
+      batch_task->AppendInput(input, task);
+    }
   }
   return {batch_task, dequeue_cnt};
 }
