@@ -25,7 +25,6 @@ void Connection::Start() {
 }
 
 void Connection::Stop() {
-  LOG(INFO) << "Connection Stop";
   std::lock_guard<std::mutex> socket_guard(socket_mutex_);
   socket_.close();
 }
