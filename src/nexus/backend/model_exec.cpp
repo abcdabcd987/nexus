@@ -124,14 +124,11 @@ bool ModelExecutor::Preprocess(std::shared_ptr<Task> task, bool force) {
   return true;
 }
 
-  void ModelExecutor::Enqueue(std::shared_ptr<Task> task) {
-   std::lock_guard<std::mutex> lock(task_mu_);
-   processing_tasks_.emplace(task->task_id, task);
-   task_queue_.push(task);
-   // for (auto input : task->inputs) {
-   //   input_queue_.push(input);
-   // }
-  }
+void ModelExecutor::Enqueue(std::shared_ptr<Task> task) {
+  std::lock_guard<std::mutex> lock(task_mu_);
+  processing_tasks_.emplace(task->task_id, task);
+  task_queue_.push(task);
+}
 
 bool ModelExecutor::AddPreprocessedTask(std::shared_ptr<Task> task,
                                         bool force) {
@@ -168,7 +165,10 @@ uint64_t ModelExecutor::Execute(uint32_t batch) {
   drop_counter_->Increase(num_drops);
   
   if (batch_task->batch_size() == 0) {
-    DecreaseOpenRequests(dequeue_cnt);
+    //DecreaseOpenRequests(dequeue_cnt);
+    if (num_drops > 0) {
+      LOG(INFO) << model_->model_session_id() << " drop " << num_drops << " requests";
+    }
     std::lock_guard<std::mutex> lock(time_mu_);
     last_exec_finish_ = t2;
     return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -190,15 +190,15 @@ uint64_t ModelExecutor::Execute(uint32_t batch) {
     std::lock_guard<std::mutex> lock(time_mu_);
     last_exec_finish_ = t3;
   }
-  DecreaseOpenRequests(dequeue_cnt);
+  //DecreaseOpenRequests(dequeue_cnt);
   
   auto memcpy_lat = std::chrono::duration_cast<std::chrono::microseconds>(
       t2 - t1).count();
   auto forward_lat = std::chrono::duration_cast<std::chrono::microseconds>(
       t3 - t2).count();
-  VLOG(1) << model_->model_session_id() << " forwards batch " <<
+  LOG(INFO) << model_->model_session_id() << " forwards batch " <<
       batch_task->batch_id() << ", size " << batch_task->batch_size() <<
-      ", memcpy lat " << memcpy_lat << " us, forward lat " << forward_lat <<
+      ", preprocess lat " << memcpy_lat << " us, forward lat " << forward_lat <<
       " us, drop " << num_drops << " requests";
 
   auto outputs = batch_task->outputs();
@@ -327,92 +327,76 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
     uint32_t expect_batch_size) {
   auto batch_task = std::make_shared<BatchTask>(model_->max_batch());
   batch_task->SetInputArray(input_array_);
-  
-  std::lock_guard<std::mutex> lock(task_mu_);
-  if (task_queue_.empty()) {
-    return {batch_task, 0};
-  }
-  // if (expect_batch_size > input_queue_.size()) {
-  //   expect_batch_size = input_queue_.size();
-  // }
-  // if (expect_batch_size == 0) {
-  //   return {batch_task, 0};
-  // }
 
-  CHECK(profile_ != nullptr);
   int dequeue_cnt = 0;
-
-  // find the earliest deadline
-  TimePoint now = Clock::now();
-  TimePoint finish = now;
-  finish += std::chrono::microseconds(static_cast<int>(profile_->GetPreprocessLatency()));
-  finish += std::chrono::microseconds(static_cast<int>(profile_->GetForwardLatency(1)));
-  finish += std::chrono::microseconds(static_cast<int>(profile_->GetPostprocessLatency()));
-  
-  while (!task_queue_.empty()) {
-    auto &task = task_queue_.top();
-    if (task->result.status() != CTRL_OK || task->deadline() < finish) {
-      task->timer.Record("exec");
-      VLOG(1) << model_->model_session_id() << " drops task " <<
-              task->task_id << ", waiting time " <<
-              task->timer.GetLatencyMicros("begin", "exec") << " us";
-      task->result.set_status(TIMEOUT);
-      task_queue_.pop();
-      RemoveTask(task);
-      ++dequeue_cnt;
-    } else {
-      finish = task->deadline();
-      break;
-    }
-  }
-
-  if (task_queue_.empty()) {
-    return {batch_task, dequeue_cnt};
-  }
-
-  int budget = std::chrono::duration_cast<std::chrono::microseconds>(finish - now).count();
-  uint32_t batch_size = 0;
-  std::unordered_map<std::string, std::vector<std::shared_ptr<Input> > > model_inputs;
   int num_tasks = 0;
-  while (!task_queue_.empty()) {
-    std::shared_ptr<Task> task = task_queue_.top();
-    int num_inputs = 1;
-    if (task->query.window_size() > 0) {
-      num_inputs = task->query.window_size();
+  std::unordered_map<std::string, std::vector<std::shared_ptr<Input>>> model_inputs;
+  
+  { // lock region by task_mu_
+    std::lock_guard<std::mutex> lock(task_mu_);
+    if (task_queue_.empty()) {
+      return {batch_task, 0};
     }
-    if (batch_size + num_inputs > model_->batch()) break;
-    batch_size += num_inputs;
-    // double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
-    //   profile_->GetPostprocessLatency();
-    double latency = profile_->GetPreprocessLatency() * batch_size / num_workers_ +
-                     profile_->GetForwardLatency(batch_size) +
-                     profile_->GetPostprocessLatency();
-    if (latency > budget) {
-      batch_size -= num_inputs;
-      break;
-    }
-    task_queue_.pop();
-    ++dequeue_cnt;
-    worker_in_queue_.push(task);
-    ++num_tasks;
-    
-    // workers.push_back(std::make_pair(
-    //     std::thread(preprocess, model_.get(), task), task));
-    
-    /*
-    model_->Preprocess(task);
-    task->timer.Record("exec");
-    auto& model_sess_id = task->query.model_session_id();
-    if (model_inputs.find(model_sess_id) == model_inputs.end()) {
-      model_inputs.emplace(model_sess_id,
-                           std::vector<std::shared_ptr<Input> >{});
-    }
-    for (auto input : task->inputs) {
-      model_inputs.at(model_sess_id).push_back(input);
-    }
-    */
-  }
 
+    CHECK(profile_ != nullptr);
+
+    // find the earliest deadline
+    TimePoint now = Clock::now();
+    TimePoint finish = now;
+    //double preprocess_us = 10 * 1e6;
+    finish += std::chrono::microseconds(static_cast<int>(profile_->GetPreprocessLatency()));
+    finish += std::chrono::microseconds(static_cast<int>(profile_->GetForwardLatency(1)));
+    finish += std::chrono::microseconds(static_cast<int>(profile_->GetPostprocessLatency()));
+  
+    while (!task_queue_.empty()) {
+      auto task = task_queue_.top();
+      if (task->result.status() != CTRL_OK || task->deadline() < finish) {
+        task->timer.Record("exec");
+        VLOG(1) << model_->model_session_id() << " drops task " <<
+            task->task_id << ", waiting time " <<
+            task->timer.GetLatencyMicros("begin", "exec") << " us";
+        task->result.set_status(TIMEOUT);
+        task_queue_.pop();
+        ++dequeue_cnt;
+        RemoveTask(task);
+      } else {
+        finish = task->deadline();
+        break;
+      }
+    }
+
+    if (task_queue_.empty()) {
+      return {batch_task, dequeue_cnt};
+    }
+
+    int budget = std::chrono::duration_cast<std::chrono::microseconds>(finish - now).count();
+    uint32_t batch_size = 0;
+    while (!task_queue_.empty()) {
+      std::shared_ptr<Task> task = task_queue_.top();
+      int num_inputs = 1;
+      if (task->query.window_size() > 0) {
+        num_inputs = task->query.window_size();
+      }
+      if (batch_size + num_inputs > model_->batch()) break;
+      batch_size += num_inputs;
+      // double latency = profile_->GetPreprocessLatency() * batch_size + profile_->GetForwardLatency(batch_size) +
+      //   profile_->GetPostprocessLatency();
+      double latency = profile_->GetPreprocessLatency() +
+                       profile_->GetForwardLatency(batch_size) +
+                       profile_->GetPostprocessLatency();
+      if (latency > budget) {
+        batch_size -= num_inputs;
+        break;
+      }
+      task_queue_.pop();
+      ++dequeue_cnt;
+      worker_in_queue_.push(task);
+      ++num_tasks;
+    }
+  }   // end of task_mu_
+
+
+  // Wait for preprocessing finish
   int finished = 0;
   while (finished < num_tasks) {
     auto task = worker_out_queue_.pop();
@@ -441,17 +425,23 @@ std::pair<std::shared_ptr<BatchTask>, int> ModelExecutor::GetBatchTaskEarliest(
   //     model_inputs.at(model_sess_id).push_back(input);
   //   }
   // }
-  
+
+  // lock task_mu_
+  std::lock_guard<std::mutex> lock(task_mu_);
   std::stringstream ss;
   for (auto const& iter : model_inputs) {
     for (auto input : iter.second) {
-      auto task = processing_tasks_.at(input->task_id);
+      auto task_iter = processing_tasks_.find(input->task_id);
+      if (task_iter == processing_tasks_.end()) {
+        LOG(FATAL) << model_->model_session_id() << " cannot find task " << input->task_id;
+      }
+      auto task = task_iter->second;
       batch_task->AppendInput(input, task);
       ss << task->task_id << " ";
     }
   }
   VLOG(1) << model_->model_session_id() << " batch size " <<
-          batch_task->batch_size() << ": " << ss.str();
+      batch_task->batch_size() << ": " << ss.str();
   return {batch_task, dequeue_cnt};
 
   /*

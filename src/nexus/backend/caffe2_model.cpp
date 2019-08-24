@@ -187,24 +187,33 @@ std::unordered_map<std::string, ArrayPtr> Caffe2Model::GetOutputGpuArrays() {
 void Caffe2Model::Preprocess(std::shared_ptr<Task> task) {
   auto prepare_image = [&](cv::Mat& image) {
     auto in_arr = std::make_shared<Array>(DT_FLOAT, input_size_, cpu_device_);
+    // cv::Mat resized_img(image_height_, image_width_, CV_32FC3,
+    //                     in_arr->Data<void>());
+    // cv::resize(image, resized_img, cv::Size(image_width_, image_height_));
     cv::Mat resized_img;
     cv::resize(image, resized_img, cv::Size(image_width_, image_height_));
-    float* out_ptr = in_arr->Data<float>();
-    int out_index;
-    for (int h = 0; h < image_height_; ++h) {
-      const uchar* ptr = resized_img.ptr<uchar>(h);
-      int in_index = 0;
-      for (int w = 0; w < image_width_; ++w) {
-        for (int c = 0; c < 3; ++c) {
-          out_index = (c * image_height_ + h) * image_width_ + w;
-          float pixel = static_cast<float>(ptr[in_index++]);
-          if (has_mean_file_) {
+    if (has_mean_file_) {
+      float* out_ptr = in_arr->Data<float>();
+      int out_index = 0;
+      for (int h = 0; h < image_height_; ++h) {
+        const uchar* ptr = resized_img.ptr<uchar>(h);
+        int in_index = 0;
+        for (int w = 0; w < image_width_; ++w) {
+          for (int c = 0; c < 3; ++c) {
+            out_index = (c * image_height_ + h) * image_width_ + w;
+            float pixel = static_cast<float>(ptr[in_index++]);
+            //if (has_mean_file_) {
             out_ptr[out_index] = (pixel - mean_blob_[out_index]) * scale_;
-          } else {
-            out_ptr[out_index] = (pixel - mean_value_[c]) * scale_;
+            // } else {
+            //   out_ptr[out_index] = (pixel - mean_value_[c]) * scale_;
+            // }
           }
         }
       }
+    } else {
+      cv::Mat out(image_height_, image_width_, CV_32FC3,
+                  in_arr->Data<void>());
+      out = (image - cv::Scalar(mean_value_[0], mean_value_[1], mean_value_[2])) * scale_;
     }
     task->AppendInput(in_arr);
   };
