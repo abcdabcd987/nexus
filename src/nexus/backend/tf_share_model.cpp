@@ -1,7 +1,11 @@
 #include "nexus/backend/tf_share_model.h"
-#include "nexus/backend/tensorflow_model.h"
-#include "nexus/backend/utils.h"
+
 #include <boost/filesystem.hpp>
+#include <glog/logging.h>
+
+#include "nexus/backend/tensorflow_model.h"
+#include "nexus/backend/tensorflow_util.h"
+#include "nexus/backend/utils.h"
 
 namespace fs = boost::filesystem;
 
@@ -46,7 +50,7 @@ TFShareModel::TFShareModel(int gpu_id, const ModelInstanceConfig &config) :
   std::unique_ptr<ModelInstance> model;
   CreateModelInstance(gpu_id, model_config, &model);
   auto* ptr = dynamic_cast<TensorflowModel*>(model.release());
-  CHECK_NE(ptr, nullptr);
+  CHECK(ptr != nullptr);
   tf_model_.reset(ptr);
 }
 
@@ -97,22 +101,38 @@ void TFShareModel::Forward(std::shared_ptr<BatchTask> batch_task) {
 
   auto &m = *tf_model_;
   size_t batch_size = batch_task->batch_size();
-  auto in_tensor = m.input_tensors_[batch_task->GetInputArray()->tag()]->Slice(0, batch_size);
+  auto* input_tensor = m.input_tensors_[batch_task->GetInputArray()->tag()];
+  auto* in_tensor = TFTensorSlice(input_tensor, 0, batch_size);
   m.set_slice_tensor(m.slice_beg_tensor_, slice_beg);
-  m.set_slice_tensor(m.slice_end_tensor_, slice_len);
+  m.set_slice_tensor(m.slice_len_tensor_, slice_len);
 
-  std::vector<tf::Tensor> out_tensors;
-  std::vector<std::pair<std::string, tf::Tensor>> inputs;
-  inputs.emplace_back(tf_share_info_->input_layer, in_tensor);
-  inputs.emplace_back(tf_share_info_->slice_beg_vector, *m.slice_beg_tensor_);
-  inputs.emplace_back(tf_share_info_->slice_len_vector, *m.slice_end_tensor_);
-  tf::Status status = m.session_->Run(inputs, m.output_layers_, {}, &out_tensors);
-  if (!status.ok()) {
-    LOG(FATAL) << "Failed to run tensorflow: " << status.ToString();
-    return;
+  std::vector<TF_Output> inputs;
+  std::vector<TF_Tensor*> input_values;
+  inputs.push_back(GetTFOperationAsOutputFromGraph(m.graph_, m.input_layer_.c_str()));
+  inputs.push_back(GetTFOperationAsOutputFromGraph(m.graph_, tf_share_info_->slice_beg_vector.c_str()));
+  inputs.push_back(GetTFOperationAsOutputFromGraph(m.graph_, tf_share_info_->slice_len_vector.c_str()));
+  input_values.push_back(in_tensor);
+  input_values.push_back(m.slice_beg_tensor_);
+  input_values.push_back(m.slice_len_tensor_);
+  std::vector<TF_Output> outputs;
+  TF_Tensor** output_values = new TF_Tensor*[m.output_layers_.size()];
+  for (const auto& output_layer : m.output_layers_) {
+    outputs.push_back(GetTFOperationAsOutputFromGraph(m.graph_, output_layer.c_str()));
+  }
+  auto* status = TF_NewStatus();
+  TF_SessionRun(m.session_, 
+      nullptr, // RunOptions
+      inputs.data(), input_values.data(), inputs.size(), // Inputs
+      outputs.data(), output_values, outputs.size(), // Outputs
+      nullptr, 0, // Target operations
+      nullptr, // RunMetadata,
+      status);
+  if (TF_GetCode(status) != TF_OK) {
+    LOG(FATAL) << "Failed to run " << model_session_id_ << ": "
+               << TF_Message(status);
   }
 
-  std::vector<std::shared_ptr<Output>> outputs(tasks.size());
+  std::vector<std::shared_ptr<Output>> model_outputs(tasks.size());
   std::unordered_map<std::string, std::shared_ptr<Array>> arr;
   for (size_t i = 0; i < m.output_layers_.size(); ++i) {
     const auto& name = m.output_layers_[i];
@@ -120,19 +140,26 @@ void TFShareModel::Forward(std::shared_ptr<BatchTask> batch_task) {
     auto out_array = batch_task->GetOutputArray(name);
     arr.clear();
     const int32_t beg = slice_beg[i], len = slice_len[i];
-    const auto& out_tensor = out_tensors[i];
-    CHECK_EQ(out_tensor.NumElements(), num_elements * len);
+    CHECK_EQ(TF_TensorElementCount(output_values[i]), num_elements * len);
     for (int32_t j = 0; j < len; ++j) {
       auto out_buf = out_array->Slice(num_elements * j, num_elements);
-      const char* tensor_data_base = out_tensor.tensor_data().data();
+      const char* tensor_data_base = reinterpret_cast<const char*>(TF_TensorData(output_values[i]));
       const char* tensor_data = tensor_data_base + j * num_elements * sizeof(float);
       Memcpy(out_buf->Data<float>(), cpu_device_, tensor_data, cpu_device_, num_elements * sizeof(float));
       arr[name] = out_buf;
       const auto& input = batch_task->inputs()[beg + j];
-      outputs[beg + j] = std::make_shared<Output>(input->task_id, input->index, arr);
+      model_outputs[beg + j] = std::make_shared<Output>(input->task_id, input->index, arr);
     }
   }
-  batch_task->set_outputs(outputs);
+  batch_task->set_outputs(model_outputs);
+
+  // Free memory
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    TF_DeleteTensor(output_values[i]);
+  }
+  delete [] output_values;
+  TF_DeleteTensor(in_tensor);
+  TF_DeleteStatus(status);
 }
 
 void TFShareModel::Postprocess(std::shared_ptr<Task> task) {

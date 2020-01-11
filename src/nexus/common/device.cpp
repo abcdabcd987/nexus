@@ -1,5 +1,6 @@
 #include "nexus/common/device.h"
 #include <glog/logging.h>
+#include <gflags/gflags.h>
 
 namespace nexus {
 

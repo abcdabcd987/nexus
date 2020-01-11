@@ -156,54 +156,25 @@ endif()
 
 ## backend: TensorFlow support ##
 if(USE_TENSORFLOW)
+    include(ExternalProject)
+    ExternalProject_Add(tensorflow
+        URL               https://storage.googleapis.com/tensorflow/libtensorflow/libtensorflow-gpu-linux-x86_64-1.15.0.tar.gz
+        URL_MD5           164d98d460f8028f5e33f3651d027c77
+        CONFIGURE_COMMAND ""
+        BUILD_COMMAND     ""
+        INSTALL_COMMAND   ""
+    )
+
     target_compile_definitions(backend_obj PUBLIC USE_TENSORFLOW)
     target_sources(backend_obj PUBLIC
             src/nexus/backend/tensorflow_model.cpp
+            src/nexus/backend/tensorflow_util.cpp
             src/nexus/backend/tf_share_model.cpp)
-    # set_source_files_properties(src/nexus/backend/tensorflow_model.cpp PROPERTIES COMPILE_OPTIONS -DNDEBUG)
-    set(TENSORFLOW_BUILD_ROOT ${CMAKE_CURRENT_BINARY_DIR}/tensorflow/execroot/org_tensorflow/bazel-out)
-
-    # tensorflow/core/lib/core/refcount.h is REALLY REALLY annoying. Need NDEBUG here.
-    # https://github.com/tensorflow/tensorflow/issues/17316
-    if(CMAKE_BUILD_TYPE MATCHES DEBUG)
-        target_compile_definitions(backend_obj PUBLIC NDEBUG)
-    endif()
-    if(DEBUG_TF_BUILD)
-        set(TENSORFLOW_BUILD_ROOT ${TENSORFLOW_BUILD_ROOT}/k8-dbg)
-        set(TENSORFLOW_BUILD_OPT --compilation_mode=dbg --strip=never --copt="-DNDEBUG" --copt="-march=x86-64")
-    else()
-        set(TENSORFLOW_BUILD_ROOT ${TENSORFLOW_BUILD_ROOT}/k8-opt)
-        set(TENSORFLOW_BUILD_OPT --config=opt)
-    endif()
-
-    set(TENSORFLOW_SO
-            ${TENSORFLOW_BUILD_ROOT}/bin/tensorflow/libtensorflow_cc.so
-            ${TENSORFLOW_BUILD_ROOT}/bin/tensorflow/libtensorflow_framework.so)
-    add_custom_command(
-        OUTPUT ${TENSORFLOW_SO}
-        WORKING_DIRECTORY
-            ${CMAKE_CURRENT_SOURCE_DIR}/frameworks/tensorflow
-        COMMAND
-            cp  ${CMAKE_CURRENT_SOURCE_DIR}/frameworks/tf_configure.bazelrc
-                ${CMAKE_CURRENT_SOURCE_DIR}/frameworks/tensorflow/.tf_configure.bazelrc
-        COMMAND
-            bazel --output_base=${CMAKE_CURRENT_BINARY_DIR}/tensorflow build ${TENSORFLOW_BUILD_OPT}
-                --action_env CUDA_TOOLKIT_PATH=${CUDA_PATH}
-                --action_env CUDNN_INSTALL_PATH=${CUDA_PATH}
-                //tensorflow:libtensorflow_cc.so
-                //tensorflow:libtensorflow_framework.so
-                //tensorflow:install_headers
-        COMMAND
-            bazel --output_base=${CMAKE_CURRENT_BINARY_DIR}/tensorflow shutdown)
-    add_custom_target(tensorflow DEPENDS ${TENSORFLOW_SO})
-    add_custom_target(clean-tensorflow
-        WORKING_DIRECTORY
-            ${CMAKE_CURRENT_SOURCE_DIR}/frameworks/tensorflow
-        COMMAND
-            bazel --output_base=${CMAKE_CURRENT_BINARY_DIR}/tensorflow clean)
-    target_include_directories(backend_obj PUBLIC ${TENSORFLOW_BUILD_ROOT}/genfiles/tensorflow/include)
-    target_include_directories(backend_obj PUBLIC ${TENSORFLOW_BUILD_ROOT}/genfiles/tensorflow/include/external/com_google_absl)
-    target_link_libraries(backend_obj PUBLIC ${TENSORFLOW_SO})
+    ExternalProject_Get_property(tensorflow SOURCE_DIR)
+    set(tensorflow_DIR ${SOURCE_DIR})
+    target_include_directories(backend_obj PUBLIC ${tensorflow_DIR}/include)
+    target_link_libraries(backend_obj PUBLIC ${tensorflow_DIR}/lib/libtensorflow.so)
+    target_link_libraries(backend_obj PUBLIC ${tensorflow_DIR}/lib/libtensorflow_framework.so)
     add_dependencies(backend_obj tensorflow)
 endif()
 

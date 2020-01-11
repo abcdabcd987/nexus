@@ -1,14 +1,8 @@
 #ifndef NEXUS_BACKEND_TENSORFLOW_MODEL_H_
 #define NEXUS_BACKEND_TENSORFLOW_MODEL_H_
 
-#ifdef USE_TENSORFLOW
-
 #include "nexus/backend/model_ins.h"
-// Tensorflow headers
-#include "tensorflow/core/public/session.h"
-
-namespace tf = tensorflow;
-
+#include "tensorflow/c/c_api.h"
 
 namespace nexus {
 namespace backend {
@@ -16,8 +10,8 @@ namespace backend {
 class TFShareModel;
 
 class TensorflowModel : public ModelInstance {
- public:
-  TensorflowModel(int gpu_id, const ModelInstanceConfig& config);
+public:
+  TensorflowModel(int gpu_id, const ModelInstanceConfig &config);
 
   ~TensorflowModel();
 
@@ -35,16 +29,15 @@ class TensorflowModel : public ModelInstance {
 
   void Postprocess(std::shared_ptr<Task> task) final;
 
- private:
-  tf::Tensor* NewInputTensor();
+private:
+  TF_Tensor *NewInputTensor();
 
-  void MarshalDetectionResult(
-      const QueryProto& query, std::shared_ptr<Output> output,
-      int im_height, int im_width, QueryResultProto* result);
+  void MarshalDetectionResult(const QueryProto &query,
+                              std::shared_ptr<Output> output, int im_height,
+                              int im_width, QueryResultProto *result);
 
-  tf::SessionOptions gpu_option_;
-  tf::SessionOptions cpu_option_;
-  std::unique_ptr<tf::Session> session_;
+  TF_Session* session_ = nullptr;
+  TF_Graph* graph_ = nullptr;
   int image_height_;
   int image_width_;
   std::string input_layer_;
@@ -57,21 +50,19 @@ class TensorflowModel : public ModelInstance {
   std::vector<float> input_mean_;
   std::vector<float> input_std_;
   std::unordered_map<int, std::string> classnames_;
-  tf::Allocator* gpu_allocator_;
-  std::vector<std::unique_ptr<tf::Tensor> > input_tensors_;
+  std::vector<TF_Tensor*> input_tensors_;
   bool first_input_array_;
 
   // supports for TFShareModel
   friend class TFShareModel;
   size_t num_suffixes_;
-  std::unique_ptr<tf::Tensor> slice_beg_tensor_;
-  std::unique_ptr<tf::Tensor> slice_end_tensor_;
-  void set_slice_tensor(const std::unique_ptr<tf::Tensor>& dst, const std::vector<int32_t> &src);
+  TF_Tensor* slice_beg_tensor_ = nullptr;
+  TF_Tensor* slice_len_tensor_ = nullptr;
+  void set_slice_tensor(TF_Tensor* dst,
+                        const std::vector<int32_t> &src);
 };
 
 } // namespace backend
 } // namespace nexus
-
-#endif // USE_TENSORFLOW
 
 #endif // NEXUS_BACKEND_TENSORFLOW_MODEL_H_
