@@ -1,24 +1,25 @@
-#include <glog/logging.h>
+#include "nexus/app/model_handler.h"
+
 #include <gflags/gflags.h>
+#include <glog/logging.h>
+
+#include <algorithm>
 #include <limits>
 #include <typeinfo>
-#include <algorithm>
 
-#include "nexus/app/model_handler.h"
 #include "nexus/app/request_context.h"
 #include "nexus/common/model_def.h"
 
 DEFINE_int32(count_interval, 1, "Interval to count number of requests in sec");
-DEFINE_int32(load_balance, 3, "Load balance policy (1: random, 2: choice of 2, "
+DEFINE_int32(load_balance,
+             static_cast<int>(nexus::LoadBalancePolicy::DeficitRR),
+             "Load balance policy (1: random, 2: choice of two, "
              "3: deficit round robin)");
 
 namespace nexus {
 namespace app {
 
-QueryResult::QueryResult(uint64_t qid) :
-    qid_(qid),
-    ready_(false) {
-}
+QueryResult::QueryResult(uint64_t qid) : qid_(qid), ready_(false) {}
 
 uint32_t QueryResult::status() const {
   CheckReady();
@@ -78,24 +79,19 @@ void QueryResult::SetError(uint32_t status, const std::string& error_msg) {
 std::atomic<uint64_t> ModelHandler::global_query_id_(0);
 
 ModelHandler::ModelHandler(const std::string& model_session_id,
-                           BackendPool& pool, LoadBalancePolicy lb_policy) :
-    model_session_id_(model_session_id),
-    backend_pool_(pool),
-    lb_policy_(lb_policy),
-    total_throughput_(0.),
-    rand_gen_(rd_()) {
+                           BackendPool& pool,
+                           LoadBalancePolicy lb_policy)
+    : model_session_id_(model_session_id),
+      dispatcher_(model_session_id, &pool, lb_policy) {
   ParseModelSession(model_session_id, &model_session_);
-  counter_ = MetricRegistry::Singleton().CreateIntervalCounter(
-      FLAGS_count_interval);
-  LOG(INFO) << model_session_id_ << " load balance policy: " << lb_policy_;
-  if (lb_policy_ == LB_DeficitRR) {
-    running_ = true;
-  }
+  counter_ =
+      MetricRegistry::Singleton().CreateIntervalCounter(FLAGS_count_interval);
+  LOG(INFO) << model_session_id_
+            << " load balance policy: " << static_cast<int>(lb_policy);
 }
 
 ModelHandler::~ModelHandler() {
   MetricRegistry::Singleton().RemoveMetric(counter_);
-  running_ = false;
 }
 
 std::shared_ptr<QueryResult> ModelHandler::Execute(
@@ -105,7 +101,7 @@ std::shared_ptr<QueryResult> ModelHandler::Execute(
   uint64_t qid = global_query_id_.fetch_add(1, std::memory_order_relaxed);
   counter_->Increase(1);
   auto reply = std::make_shared<QueryResult>(qid);
-  auto backend = GetBackend();
+  auto backend = dispatcher_.GetBackend();
   if (backend == nullptr) {
     ctx->HandleError(SERVICE_UNAVAILABLE, "Service unavailable");
     return reply;
@@ -143,7 +139,8 @@ void ModelHandler::HandleReply(const QueryResultProto& result) {
   auto iter = query_ctx_.find(qid);
   if (iter == query_ctx_.end()) {
     // FIXME why this happens? lower from FATAL to ERROR temporarily
-    LOG(ERROR) << model_session_id_ << " cannot find query context for query " << qid;
+    LOG(ERROR) << model_session_id_ << " cannot find query context for query "
+               << qid;
     return;
   }
   auto ctx = iter->second;
@@ -152,130 +149,12 @@ void ModelHandler::HandleReply(const QueryResultProto& result) {
 }
 
 void ModelHandler::UpdateRoute(const ModelRouteProto& route) {
-  std::lock_guard<std::mutex> lock(route_mu_);
-  backends_.clear();
-  backend_rates_.clear();
-  total_throughput_ = 0.;
-
-  double min_rate = std::numeric_limits<double>::max();
-  for (auto itr : route.backend_rate()) {
-    min_rate = std::min(min_rate, itr.throughput());
-  }
-  quantum_to_rate_ratio_ = 1. / min_rate;
-  
-  for (auto itr : route.backend_rate()) {
-    uint32_t backend_id = itr.info().node_id();
-    backends_.push_back(backend_id);
-    const auto rate = itr.throughput();
-    backend_rates_.emplace(backend_id, rate);
-    total_throughput_ += rate;
-    LOG(INFO) << "- backend " << backend_id << ": " << rate;
-    if (backend_quanta_.count(backend_id) == 0) {
-      backend_quanta_.emplace(backend_id, rate * quantum_to_rate_ratio_);
-    }
-  }
-  LOG(INFO) << "Total throughput: " << total_throughput_;
-  std::sort(backends_.begin(), backends_.end());
-  current_drr_index_ %= backends_.size();
-  for (auto iter = backend_quanta_.begin(); iter != backend_quanta_.end();) {
-    if (backend_rates_.count(iter->first) == 0) {
-      iter = backend_quanta_.erase(iter);
-    } else {
-      ++iter;
-    }
-  }
+  return dispatcher_.UpdateRoute(route);
 }
 
 std::vector<uint32_t> ModelHandler::BackendList() {
-  std::vector<uint32_t> ret;
-  std::lock_guard<std::mutex> lock(route_mu_);
-  for (auto iter : backend_rates_) {
-    ret.push_back(iter.first);
-  }
-  return ret;
+  return dispatcher_.BackendList();
 }
 
-std::shared_ptr<BackendSession> ModelHandler::GetBackend() {
-  std::lock_guard<std::mutex> lock(route_mu_);
-  switch (lb_policy_) {
-    case LB_WeightedRR: {
-      return GetBackendWeightedRoundRobin();
-    }
-    case LB_DeficitRR: {
-      auto backend = GetBackendDeficitRoundRobin();
-      if (backend != nullptr) {
-        return backend;
-      }
-      return GetBackendWeightedRoundRobin();
-    }
-    case LB_Query: {
-      auto candidate1 = GetBackendWeightedRoundRobin();
-      if (candidate1 == nullptr) {
-        return nullptr;
-      }
-      auto candidate2 = GetBackendWeightedRoundRobin();
-      if (candidate1 == candidate2) {
-        return candidate1;
-      }
-      if (candidate1->GetUtilization() <= candidate2->GetUtilization()) {
-        return candidate1;
-      }
-      return candidate2;
-    }
-    default:
-      return nullptr;
-  }
-}
-
-std::shared_ptr<BackendSession> ModelHandler::GetBackendWeightedRoundRobin() {
-  std::uniform_real_distribution<float> dis(0, total_throughput_);
-  float select = dis(rand_gen_);
-  uint i = 0;
-  for (; i < backends_.size(); ++i) {
-    uint32_t backend_id = backends_[i];
-    float rate = backend_rates_.at(backend_id);
-    select -= rate;
-    if (select < 0) {
-      auto backend_sess = backend_pool_.GetBackend(backend_id);
-      if (backend_sess != nullptr) {
-        return backend_sess;
-      }
-      break;
-    }
-  }
-  ++i;
-  for (uint j = 0; j < backends_.size(); ++j, ++i) {
-    auto backend_sess = backend_pool_.GetBackend(backends_[i]);
-    if (backend_sess != nullptr) {
-      return backend_sess;
-    }
-  }
-  return nullptr;
-}
-
-std::shared_ptr<BackendSession> ModelHandler::GetBackendDeficitRoundRobin() {
-  for (size_t i = 0; i < 2 * backends_.size(); ++i) {
-    size_t idx = (current_drr_index_ + i) % backends_.size();
-    uint32_t backend_id = backends_[idx];
-    if (backend_quanta_.at(backend_id) >= 1. - 1e-6) {
-      auto backend = backend_pool_.GetBackend(backend_id);
-      if (backend != nullptr) {
-        backend_quanta_[backend_id] -= 1.;
-        return backend;
-      } else {
-        // The backend has disappeared. Could this be fixed by
-        // making `backend_pool_` share the same lock with `backend_`?
-        current_drr_index_ = (current_drr_index_ + 1) % backends_.size();
-      }
-    } else {
-      auto rate = backend_rates_[backend_id];
-      backend_quanta_[backend_id] += rate * quantum_to_rate_ratio_;
-      current_drr_index_ = (current_drr_index_ + 1) % backends_.size();
-    }
-  }
-
-  return nullptr;
-}
-
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus

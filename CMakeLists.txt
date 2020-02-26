@@ -80,6 +80,7 @@ add_library(common OBJECT
         src/nexus/common/image.cpp
         src/nexus/common/message.cpp
         src/nexus/common/metric.cpp
+        src/nexus/common/model_backend_dispatcher.cpp
         src/nexus/common/model_db.cpp
         src/nexus/common/server_base.cpp
         src/nexus/common/time_util.cpp

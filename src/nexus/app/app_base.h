@@ -3,6 +3,7 @@
 
 #include <gflags/gflags.h>
 #include "nexus/app/frontend.h"
+#include "nexus/common/load_balance_policy.h"
 
 DECLARE_int32(load_balance);
 
