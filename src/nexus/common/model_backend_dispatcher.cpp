@@ -9,7 +9,8 @@ ModelBackendDispatcher::ModelBackendDispatcher(
     LoadBalancePolicy lb_policy)
     : model_session_id_(std::move(model_session_id)),
       backend_pool_(pool),
-      lb_policy_(lb_policy) {}
+      lb_policy_(lb_policy),
+      rand_gen_(rd_()) {}
 
 void ModelBackendDispatcher::UpdateRoute(const ModelRouteProto& route) {
   std::lock_guard<std::mutex> lock(route_mu_);

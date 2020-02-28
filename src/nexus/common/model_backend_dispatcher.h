@@ -15,7 +15,8 @@
 
 namespace nexus {
 
-// Dispatches backends for a request of a specific model session.
+// Dispatch a request of a specific model session to backends. Used by both
+// frontend and dispatcher.
 class ModelBackendDispatcher {
  public:
   ModelBackendDispatcher(std::string model_session_id, BackendPool* pool,
