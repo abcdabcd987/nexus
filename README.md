@@ -2,6 +2,7 @@ Nexus
 =====
 
 [![Docker Image](https://img.shields.io/microbadger/image-size/abcdabcd987/nexus)](https://hub.docker.com/repository/docker/abcdabcd987/nexus)
+[![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fabcdabcd987%2Fnexus.svg?type=shield)](https://app.fossa.io/projects/git%2Bgithub.com%2Fabcdabcd987%2Fnexus?ref=badge_shield)
 
 Nexus is a scalable and efficient serving system for DNN applications on GPU
 cluster.
@@ -54,3 +55,7 @@ See [examples](examples/README.md) for more concrete usage.
 To run Nexus, you need to run the **scheduler** first, then spawn a **backend** for each
 GPU card, and finally run the Nexus **frontend** of your application.
 See [examples](examples/README.md) for more concrete usage.
+
+
+## License
+[![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2Fabcdabcd987%2Fnexus.svg?type=large)](https://app.fossa.io/projects/git%2Bgithub.com%2Fabcdabcd987%2Fnexus?ref=badge_large)
