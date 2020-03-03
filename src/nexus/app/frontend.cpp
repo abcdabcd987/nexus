@@ -1,5 +1,5 @@
-#include <limits>
 #include <gflags/gflags.h>
+#include <limits>
 
 #include "nexus/app/frontend.h"
 #include "nexus/common/config.h"
@@ -9,11 +9,11 @@ DECLARE_int32(load_balance);
 namespace nexus {
 namespace app {
 
-Frontend::Frontend(std::string port, std::string rpc_port,
-                   std::string sch_addr) :
-    ServerBase(port),
-    rpc_service_(this, rpc_port),
-    rand_gen_(rd_()) {
+Frontend::Frontend(std::string port, std::string rpc_port, std::string sch_addr)
+    : ServerBase(port),
+      rpc_service_(this, rpc_port),
+      rand_gen_(rd_()),
+      backend_dispatcher_(&io_context_, this) {
   // Start RPC service
   rpc_service_.Start();
   // Init scheduler client
@@ -21,8 +21,8 @@ Frontend::Frontend(std::string port, std::string rpc_port,
     // Add default scheduler port if no port specified
     sch_addr += ":" + std::to_string(SCHEDULER_DEFAULT_PORT);
   }
-  auto channel = grpc::CreateChannel(sch_addr,
-                                     grpc::InsecureChannelCredentials());
+  auto channel =
+      grpc::CreateChannel(sch_addr, grpc::InsecureChannelCredentials());
   sch_stub_ = SchedulerCtrl::NewStub(channel);
   // Init Node ID and register frontend to scheduler
   Register();
@@ -42,8 +42,8 @@ void Frontend::Run(QueryProcessor* qp, size_t nthreads) {
   }
   running_ = true;
   daemon_thread_ = std::thread(&Frontend::Daemon, this);
-  LOG(INFO) << "Frontend server (id: " << node_id_ << ") is listening on " <<
-      address();
+  LOG(INFO) << "Frontend server (id: " << node_id_ << ") is listening on "
+            << address();
   io_context_.run();
 }
 
@@ -54,13 +54,13 @@ void Frontend::Stop() {
   // Stop all accept new connections
   ServerBase::Stop();
   // Stop all frontend connections
-  for (auto conn: connection_pool_) {
+  for (auto conn : connection_pool_) {
     conn->Stop();
   }
   connection_pool_.clear();
   user_sessions_.clear();
   // Stop all backend connections
-  backend_pool_.StopAll();
+  backend_dispatcher_.GetBackendPool().StopAll();
   // Stop workers
   for (auto& worker : workers_) {
     worker->Stop();
@@ -93,8 +93,8 @@ void Frontend::HandleMessage(std::shared_ptr<Connection> conn,
       ReplyProto reply;
       message->DecodeBody(&request);
       RegisterUser(user_sess, request, &reply);
-      auto reply_msg = std::make_shared<Message>(kUserReply,
-                                                 reply.ByteSizeLong());
+      auto reply_msg =
+          std::make_shared<Message>(kUserReply, reply.ByteSizeLong());
       reply_msg->EncodeBody(reply);
       user_sess->Write(reply_msg);
       break;
@@ -105,8 +105,8 @@ void Frontend::HandleMessage(std::shared_ptr<Connection> conn,
         LOG(ERROR) << "UserRequest message comes from non-user connection";
         break;
       }
-      request_pool_.AddNewRequest(std::make_shared<RequestContext>(
-          user_sess, message, request_pool_));
+      request_pool_.AddNewRequest(
+          std::make_shared<RequestContext>(user_sess, message, request_pool_));
       break;
     }
     case kBackendReply: {
@@ -138,8 +138,8 @@ void Frontend::HandleError(std::shared_ptr<Connection> conn,
     } else {
       LOG(ERROR) << "Backend connection error (" << ec << "): " << ec.message();
     }
-    backend_pool_.RemoveBackend(backend_conn);
-  } else { // user_connection
+    backend_dispatcher_.GetBackendPool().RemoveBackend(backend_conn);
+  } else {  // user_connection
     if (ec == boost::asio::error::eof ||
         ec == boost::asio::error::connection_reset) {
       // user disconnects
@@ -180,18 +180,14 @@ std::shared_ptr<UserSession> Frontend::GetUserSession(uint32_t uid) {
   return itr->second;
 }
 
-std::shared_ptr<ModelHandler> Frontend::LoadModel(const LoadModelRequest& req) {
-  return LoadModel(req, LoadBalancePolicy(FLAGS_load_balance));
-}
-
 std::shared_ptr<ModelHandler> Frontend::LoadModel(const LoadModelRequest& req,
                                                   LoadBalancePolicy lb_policy) {
   LoadModelReply reply;
   grpc::ClientContext context;
   grpc::Status status = sch_stub_->LoadModel(&context, req, &reply);
   if (!status.ok()) {
-    LOG(ERROR) << "Failed to connect to scheduler: " <<
-        status.error_message() << "(" << status.error_code() << ")";
+    LOG(ERROR) << "Failed to connect to scheduler: " << status.error_message()
+               << "(" << status.error_code() << ")";
     return nullptr;
   }
   if (reply.status() != CTRL_OK) {
@@ -199,7 +195,8 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(const LoadModelRequest& req,
     return nullptr;
   }
   auto model_handler = std::make_shared<ModelHandler>(
-      reply.model_route().model_session_id(), backend_pool_, lb_policy);
+      reply.model_route().model_session_id(),
+      backend_dispatcher_.GetBackendPool(), lb_policy);
   // Only happens at Setup stage, so no concurrent modification to model_pool_
   model_pool_.emplace(model_handler->model_session_id(), model_handler);
   UpdateBackendPoolAndModelRoute(reply.model_route());
@@ -207,32 +204,35 @@ std::shared_ptr<ModelHandler> Frontend::LoadModel(const LoadModelRequest& req,
   return model_handler;
 }
 
-void Frontend::ComplexQuerySetup(const nexus::ComplexQuerySetupRequest &req) {
+void Frontend::ComplexQuerySetup(const nexus::ComplexQuerySetupRequest& req) {
   RpcReply reply;
   grpc::ClientContext context;
   grpc::Status status = sch_stub_->ComplexQuerySetup(&context, req, &reply);
   if (!status.ok()) {
-    LOG(FATAL) << "Failed to connect to scheduler: " <<
-               status.error_message() << "(" << status.error_code() << ")";
+    LOG(FATAL) << "Failed to connect to scheduler: " << status.error_message()
+               << "(" << status.error_code() << ")";
     return;
   }
   if (reply.status() != CTRL_OK) {
-    LOG(FATAL) << "ComplexQuerySetup error: " << CtrlStatus_Name(reply.status());
+    LOG(FATAL) << "ComplexQuerySetup error: "
+               << CtrlStatus_Name(reply.status());
     return;
   }
 }
 
-void Frontend::ComplexQueryAddEdge(const nexus::ComplexQueryAddEdgeRequest &req) {
+void Frontend::ComplexQueryAddEdge(
+    const nexus::ComplexQueryAddEdgeRequest& req) {
   RpcReply reply;
   grpc::ClientContext context;
   grpc::Status status = sch_stub_->ComplexQueryAddEdge(&context, req, &reply);
   if (!status.ok()) {
-    LOG(FATAL) << "Failed to connect to scheduler: " <<
-               status.error_message() << "(" << status.error_code() << ")";
+    LOG(FATAL) << "Failed to connect to scheduler: " << status.error_message()
+               << "(" << status.error_code() << ")";
     return;
   }
   if (reply.status() != CTRL_OK) {
-    LOG(FATAL) << "ComplexQuerySetup error: " << CtrlStatus_Name(reply.status());
+    LOG(FATAL) << "ComplexQuerySetup error: "
+               << CtrlStatus_Name(reply.status());
     return;
   }
 }
@@ -249,14 +249,14 @@ void Frontend::Register() {
   request.set_node_id(node_id_);
   request.set_server_port(port());
   request.set_rpc_port(rpc_service_.port());
-  
+
   while (true) {
     grpc::ClientContext context;
     RegisterReply reply;
     grpc::Status status = sch_stub_->Register(&context, request, &reply);
     if (!status.ok()) {
-      LOG(FATAL) << "Failed to connect to scheduler: " <<
-          status.error_message() << "(" << status.error_code() << ")";
+      LOG(FATAL) << "Failed to connect to scheduler: " << status.error_message()
+                 << "(" << status.error_code() << ")";
     }
     CtrlStatus ret = reply.status();
     if (ret == CTRL_OK) {
@@ -264,8 +264,8 @@ void Frontend::Register() {
       return;
     }
     if (ret != CTRL_FRONTEND_NODE_ID_CONFLICT) {
-      LOG(FATAL) << "Failed to register frontend to scheduler: " <<
-          CtrlStatus_Name(ret);
+      LOG(FATAL) << "Failed to register frontend to scheduler: "
+                 << CtrlStatus_Name(ret);
     }
     // Frontend ID conflict, need to generate a new one
     node_id_ = dis(rand_gen_);
@@ -282,8 +282,8 @@ void Frontend::Unregister() {
   RpcReply reply;
   grpc::Status status = sch_stub_->Unregister(&context, request, &reply);
   if (!status.ok()) {
-    LOG(ERROR) << "Failed to connect to scheduler: " <<
-        status.error_message() << "(" << status.error_code() << ")";
+    LOG(ERROR) << "Failed to connect to scheduler: " << status.error_message()
+               << "(" << status.error_code() << ")";
     return;
   }
   CtrlStatus ret = reply.status();
@@ -300,8 +300,8 @@ void Frontend::KeepAlive() {
   RpcReply reply;
   grpc::Status status = sch_stub_->KeepAlive(&context, request, &reply);
   if (!status.ok()) {
-    LOG(ERROR) << "Failed to connect to scheduler: " <<
-        status.error_message() << "(" << status.error_code() << ")";
+    LOG(ERROR) << "Failed to connect to scheduler: " << status.error_message()
+               << "(" << status.error_code() << ")";
     return;
   }
   CtrlStatus ret = reply.status();
@@ -320,44 +320,13 @@ bool Frontend::UpdateBackendPoolAndModelRoute(const ModelRouteProto& route) {
     return false;
   }
   auto model_handler = iter->second;
-  // Update backend pool first
-  {
-    std::lock_guard<std::mutex> lock(backend_sessions_mu_);
-    auto old_backends = model_handler->BackendList();
-    std::unordered_set<uint32_t> new_backends;
-    // Add new backends
-    for (auto backend : route.backend_rate()) {
-      uint32_t backend_id = backend.info().node_id();
-      if (backend_sessions_.count(backend_id) == 0) {
-        backend_sessions_.emplace(
-            backend_id, std::unordered_set<std::string>{model_session_id});
-        backend_pool_.AddBackend(std::make_shared<BackendSession>(
-            backend.info(), io_context_, this));
-      } else {
-        backend_sessions_.at(backend_id).insert(model_session_id);
-      }
-      new_backends.insert(backend_id);
-    }
-    // Remove unused backends
-    for (auto backend_id : old_backends) {
-      if (new_backends.count(backend_id) == 0) {
-        backend_sessions_.at(backend_id).erase(model_session_id);
-        if (backend_sessions_.at(backend_id).empty()) {
-          LOG(INFO) << "Remove backend " << backend_id;
-          backend_sessions_.erase(backend_id);
-          backend_pool_.RemoveBackend(backend_id);
-        }
-      }
-    }
-  }
-  // Update route to backends with throughput in model handler
-  model_handler->UpdateRoute(route);
+  auto& dispatcher = model_handler->GetDispatcher();
+  backend_dispatcher_.UpdateBackendPoolAndModelRoute(route, &dispatcher);
   return true;
 }
 
-void Frontend::RegisterUser(
-    std::shared_ptr<UserSession> user_sess, const RequestProto& request,
-    ReplyProto* reply) {
+void Frontend::RegisterUser(std::shared_ptr<UserSession> user_sess,
+                            const RequestProto& request, ReplyProto* reply) {
   uint32_t uid = request.user_id();
   user_sess->set_user_id(uid);
   std::lock_guard<std::mutex> lock(user_mutex_);
@@ -395,11 +364,10 @@ void Frontend::Daemon() {
 void Frontend::ReportWorkload(const WorkloadStatsProto& request) {
   grpc::ClientContext context;
   RpcReply reply;
-  grpc::Status status = sch_stub_->ReportWorkload(&context, request,
-                                                  &reply);
+  grpc::Status status = sch_stub_->ReportWorkload(&context, request, &reply);
   if (!status.ok()) {
-    LOG(ERROR) << "Failed to connect to scheduler: " <<
-        status.error_message() << "(" << status.error_code() << ")";
+    LOG(ERROR) << "Failed to connect to scheduler: " << status.error_message()
+               << "(" << status.error_code() << ")";
     return;
   }
   CtrlStatus ret = reply.status();
@@ -408,5 +376,5 @@ void Frontend::ReportWorkload(const WorkloadStatsProto& request) {
   }
 }
 
-} // namespace app
-} // namespace nexus
+}  // namespace app
+}  // namespace nexus

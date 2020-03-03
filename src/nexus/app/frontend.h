@@ -20,6 +20,7 @@
 #include "nexus/common/model_def.h"
 #include "nexus/common/server_base.h"
 #include "nexus/common/spinlock.h"
+#include "nexus/common/backend_dispatcher.h"
 #include "nexus/proto/control.grpc.pb.h"
 #include "nexus/proto/nnquery.pb.h"
 
@@ -63,8 +64,6 @@ class Frontend : public ServerBase, public MessageHandler {
   std::shared_ptr<UserSession> GetUserSession(uint32_t uid);
 
  protected:
-  std::shared_ptr<ModelHandler> LoadModel(const LoadModelRequest& req);
-
   std::shared_ptr<ModelHandler> LoadModel(const LoadModelRequest& req,
                                           LoadBalancePolicy lb_policy);
 
@@ -99,14 +98,6 @@ class Frontend : public ServerBase, public MessageHandler {
   RpcService rpc_service_;
   /*! \brief RPC client connected to scheduler */
   std::unique_ptr<SchedulerCtrl::Stub> sch_stub_;
-  /*! \brief Backend pool */
-  BackendPool backend_pool_;
-  /*!
-   * \brief Map from backend ID to model sessions servered at this backend.
-   * Guarded by backend_sessions_mu_
-   */
-  std::unordered_map<uint32_t,
-                     std::unordered_set<std::string> > backend_sessions_;
   /*! \brief Request pool */
   RequestPool request_pool_;
   /*! \brief Worker pool for processing requests */
@@ -124,10 +115,11 @@ class Frontend : public ServerBase, public MessageHandler {
   /*! \brief Mutex for connection_pool_ and user_sessions_ */
   std::mutex user_mutex_;
 
-  std::mutex backend_sessions_mu_;
   /*! \brief Random number generator */
   std::random_device rd_;
   std::mt19937 rand_gen_;
+
+  BackendDispatcher backend_dispatcher_;
 };
 
 } // namespace app

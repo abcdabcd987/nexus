@@ -93,6 +93,8 @@ class ModelHandler {
 
   std::vector<uint32_t> BackendList();
 
+  ModelBackendDispatcher& GetDispatcher();
+
  private:
   ModelSession model_session_;
   std::string model_session_id_;

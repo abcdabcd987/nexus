@@ -53,8 +53,6 @@ class BackendSession : public Connection {
 
 class BackendPool {
  public:
-  BackendPool() {}
-
   std::shared_ptr<BackendSession> GetBackend(uint32_t backend_id);
 
   void AddBackend(std::shared_ptr<BackendSession> backend);
@@ -72,6 +70,6 @@ class BackendPool {
   std::mutex mu_;
 };
 
-} // namespace nexus
+}  // namespace nexus
 
-#endif // NEXUS_COMMON_BACKEND_POOL_H_
+#endif  // NEXUS_COMMON_BACKEND_POOL_H_

@@ -156,5 +156,9 @@ std::vector<uint32_t> ModelHandler::BackendList() {
   return dispatcher_.BackendList();
 }
 
+ModelBackendDispatcher& ModelHandler::GetDispatcher() {
+  return dispatcher_;
+}
+
 }  // namespace app
 }  // namespace nexus
