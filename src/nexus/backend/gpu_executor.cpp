@@ -6,9 +6,12 @@
 #include <thread>
 
 #include "nexus/backend/backend_server.h"
-#include "nexus/backend/caffe_model.h"
 #include "nexus/backend/gpu_executor.h"
 #include "nexus/common/device.h"
+
+#ifdef USE_CAFFE
+#include "nexus/backend/caffe_model.h"
+#endif
 
 DECLARE_int32(occupancy_valid);
 
