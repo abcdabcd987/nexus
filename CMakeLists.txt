@@ -72,6 +72,7 @@ add_library(common OBJECT
         ${PROTO_CONTROL_H}
         ${GRPC_CONTROL_CC}
         ${GRPC_CONTROL_H}
+        src/nexus/common/backend_dispatcher.cpp
         src/nexus/common/backend_pool.cpp
         src/nexus/common/buffer.cpp
         src/nexus/common/connection.cpp
