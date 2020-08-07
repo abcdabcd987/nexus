@@ -82,7 +82,6 @@ class ModelProfiler {
                int repeat = 10) {
     std::vector<uint64_t> preprocess_lats;
     std::vector<uint64_t> postprocess_lats;
-    std::unordered_map<int, std::tuple<float, float, uint64_t> > forward_stats;
     ModelInstanceConfig config;
     config.add_model_session()->CopyFrom(model_sess_);
     if (FLAGS_share_prefix) {
@@ -211,8 +210,6 @@ class ModelProfiler {
       }
       float mean, std;
       std::tie(mean, std) = GetStats<uint64_t>(forward_lats);
-      forward_stats.emplace(batch,
-                            std::make_tuple(mean, std, peak_memory_usage));
       CHECK_EQ(task_queue.size(), 0) << "Task queue is not empty";
 
       // output to file
