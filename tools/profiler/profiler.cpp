@@ -159,7 +159,8 @@ class ModelProfiler {
     *fout << gpu_device_->device_name() << "\n";
     *fout << gpu_device_->uuid() << "\n";
     *fout << "Forward latency\n";
-    *fout << "batch,latency(us),std(us),static memory(B),peak memory(B),repeat\n";
+    *fout
+        << "batch,latency(us),std(us),static memory(B),peak memory(B),repeat\n";
     *fout << std::flush;
 
     // forward and postprocess
@@ -194,7 +195,8 @@ class ModelProfiler {
       }
       auto static_memory_usage = model->GetStaticMemoryUsage();
       auto peak_memory_usage = model->GetPeakMemoryUsage();
-      LOG(INFO) << "static memory usage: " << static_memory_usage << ", peak memory usage: " << peak_memory_usage;
+      LOG(INFO) << "static memory usage: " << static_memory_usage
+                << ", peak memory usage: " << peak_memory_usage;
       for (int i = 0; i < batch * (repeat + dryrun); ++i) {
         auto task = task_queue.pop();
         CHECK_EQ(task->result.status(), CTRL_OK)
@@ -209,12 +211,13 @@ class ModelProfiler {
       }
       float mean, std;
       std::tie(mean, std) = GetStats<uint64_t>(forward_lats);
-      forward_stats.emplace(batch, std::make_tuple(mean, std, peak_memory_usage));
+      forward_stats.emplace(batch,
+                            std::make_tuple(mean, std, peak_memory_usage));
       CHECK_EQ(task_queue.size(), 0) << "Task queue is not empty";
 
       // output to file
-      *fout << batch << "," << mean << "," << std << "," << static_memory_usage << ","
-            << peak_memory_usage << "," << repeat << std::endl;
+      *fout << batch << "," << mean << "," << std << "," << static_memory_usage
+            << "," << peak_memory_usage << "," << repeat << std::endl;
 
       std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
